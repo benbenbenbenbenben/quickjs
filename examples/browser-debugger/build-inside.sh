@@ -20,6 +20,9 @@ emcc \
   examples/wasm-debug/wasm_debug.c \
   -s ENVIRONMENT=web \
   -s MODULARIZE=1 -s EXPORT_NAME=QuickJSModule \
+  -s ASYNCIFY=1 \
+  -s ASYNCIFY_STACK_SIZE=32768 \
+  -s ASYNCIFY_IMPORTS='["js_debugger_break_async"]' \
   -s EXPORTED_FUNCTIONS='["_JS_NewRuntime","_JS_NewContext","_JS_Eval","_qjs_install_debugger_handler","_qjs_install_console","_qjs_is_exception","_qjs_to_cstring","_qjs_free_cstring","_qjs_free_value","_qjs_dump_exception"]' \
   -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","UTF8ToString"]' \
   -o "$APP_DIR/public/quickjs-browser.js"

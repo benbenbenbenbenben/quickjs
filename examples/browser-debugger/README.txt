@@ -45,14 +45,20 @@ factory function.
 
 A sketch (adjust paths / flags as needed):
 
-  emcc \
-    quickjs.c quickjs-libc.c cutils.c libunicode.c libregexp.c dtoa.c \
-    examples/wasm-debug/wasm_debug.c \
-    -s ENVIRONMENT=web \
-    -s MODULARIZE=1 -s EXPORT_NAME=QuickJSModule \
-    -s EXPORTED_FUNCTIONS='["_JS_NewRuntime","_JS_NewContext","_JS_Eval","_JS_IsException","_JS_ToCString","_JS_FreeCString","_JS_FreeValue","_js_std_dump_error","_qjs_install_debugger_handler"]' \
-    -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","UTF8ToString"]' \
-    -o quickjs-browser.js
+   emcc \
+     quickjs.c quickjs-libc.c cutils.c libunicode.c libregexp.c dtoa.c \
+     examples/wasm-debug/wasm_debug.c \
+     -s ENVIRONMENT=web \
+     -s MODULARIZE=1 -s EXPORT_NAME=QuickJSModule \
+      -s ASYNCIFY=1 \
+      -s ASYNCIFY_STACK_SIZE=32768 \
+      -s ASYNCIFY_IMPORTS='["js_debugger_break_async"]' \
+
+      -s EXPORTED_FUNCTIONS='["_JS_NewRuntime","_JS_NewContext","_JS_Eval","_JS_IsException","_JS_ToCString","_JS_FreeCString","_JS_FreeValue","_js_std_dump_error","_qjs_install_debugger_handler"]' \
+
+     -s EXPORTED_RUNTIME_METHODS='["ccall","cwrap","UTF8ToString"]' \
+     -o quickjs-browser.js
+
 
 Then copy or serve `quickjs-browser.js` and `quickjs-browser.wasm` in a
 way that `index.html` can reach them, and expose the factory as
@@ -99,8 +105,10 @@ accordingly) and that they set `window.QuickJSModule`.
 Then open the dev server URL (typically http://localhost:5173/) in your
 browser. Edit the JavaScript in the editor and press "Run". Any
 `debugger;` statement will trigger the engine-level handler in
-`wasm_debug.c`, which calls `Module.onQuickJSDebugBreak(msg)`. The
-example UI shows the stack and a basic location string.
+`wasm_debug.c`, which calls `Module.onQuickJSDebugBreakAsync(msg)`.
+The QuickJS VM is paused at that bytecode using Asyncify until you
+press "Step" or "Continue" in the UI. The example shows the stack,
+a basic location string, and highlights the paused line in the editor.
 
 Docker image
 ------------
@@ -127,16 +135,31 @@ Alternatively, you can use Docker Compose from this directory:
 
 Then open http://localhost:8080/ in your browser.
 
+Continuous Integration artifacts
+--------------------------------
+
+On this fork's GitHub Actions CI, the `QuickJS wasm + browser debugger`
+workflow job builds the wasm engine and front-end example using
+`examples/browser-debugger/build-in-container.sh` and uploads the
+results as a single artifact named `quickjs-browser-debugger-dist`.
+
+From a successful CI run you can:
+
+  * open the `QuickJS wasm + browser debugger` job,
+  * download the `quickjs-browser-debugger-dist` artifact, and
+  * unpack it locally to get the Vite build output under `dist/` plus
+    the generated `quickjs-browser.js` / `.wasm` loader in
+    `public/`.
+
 Limitations
 -----------
 
-  * The "Step" / "Continue" buttons are visual only in this minimal
-    example. A full stepping debugger would require a richer protocol
-    between the JS host and the QuickJS engine (e.g. single-step hooks
-    or bytecode-level control), which is beyond the scope of this demo.
+  * This example currently stops only at `debugger;` bytecodes; there is
+    no general-purpose bytecode-level step-over/step-into/step-out or
+    user-defined breakpoint table yet.
   * Error reporting is very basic and relies on `js_std_dump_error`,
     which currently writes to the console.
   * This example focuses on clarity over efficiency or robustness; for a
     production debugger you would want to add proper session management,
-    error isolation, and possibly source maps.
+    error isolation, full stepping, breakpoints, and possibly source maps.
 

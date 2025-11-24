@@ -304,9 +304,44 @@ jobs:
       - name: Run tests on ${{ matrix.platform }}
         run: docker run --rm --interactive --mount type=bind,source=$(pwd),target=/host --platform ${{ matrix.platform }} alpine sh -c "apk add git patch make gcc libc-dev && cd /host && make test"
 
-  browser-debugger-wasm:
-    name: Browser debugger wasm build
+  wasm-engine-only:
+    name: QuickJS wasm engine (no browser UI)
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Build wasm engine only (Emscripten)
+        run: |
+          docker run --rm \
+            -v "$(pwd)":/src \
+            -w /src \
+            emscripten/emsdk:3.1.56 \
+            bash -lc 'set -euo pipefail; \
+              mkdir -p examples/wasm-debug/out; \
+              emcc \
+                -DCONFIG_VERSION=\"dev\" \
+                -I. \
+                quickjs.c cutils.c libunicode.c libregexp.c dtoa.c examples/wasm-debug/wasm_debug.c \
+                -s ENVIRONMENT=web \
+                -s MODULARIZE=1 -s EXPORT_NAME=QuickJSModule \
+                -s ASYNCIFY=1 \
+                -s ASYNCIFY_IMPORTS="['js_debugger_break_async']" \
+                -s EXPORTED_FUNCTIONS="['_JS_NewRuntime','_JS_NewContext','_JS_Eval','_qjs_install_debugger_handler','_qjs_install_console','_qjs_is_exception','_qjs_to_cstring','_qjs_free_cstring','_qjs_free_value','_qjs_dump_exception']" \
+                -s EXPORTED_RUNTIME_METHODS="['ccall','cwrap','UTF8ToString']" \
+                -o examples/wasm-debug/out/quickjs-browser.js'
+      - name: Upload wasm engine artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: quickjs-wasm-engine
+          path: |
+            examples/wasm-debug/out/quickjs-browser.js
+            examples/wasm-debug/out/quickjs-browser.wasm
+
+  wasm-debugger-example:
+    name: QuickJS wasm + browser debugger
+    runs-on: ubuntu-latest
+    needs: wasm-engine-only
     steps:
       - uses: actions/checkout@v4
         with:
@@ -314,3 +349,11 @@ jobs:
       - name: Build wasm and browser debugger (Emscripten)
         run: |
           ./examples/browser-debugger/build-in-container.sh
+      - name: Upload browser debugger artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: quickjs-browser-debugger-dist
+          path: |
+            examples/browser-debugger/dist
+            examples/browser-debugger/public/quickjs-browser.js
+            examples/browser-debugger/public/quickjs-browser.wasm

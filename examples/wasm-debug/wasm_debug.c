@@ -14,17 +14,31 @@
 /* JS hooks implemented in the host environment.
  *
  * In Node or the browser you can set:
+ *   Module.onQuickJSDebugBreakAsync = async msg => { ... };
  *   Module.onQuickJSDebugBreak = msg => { ... };
  *   Module.onQuickJSError = msg => { ... };
  * and this glue will call them for debugger breaks and uncaught errors.
+ *
+ * The debugger break path is async-aware via Emscripten Asyncify so that
+ * the QuickJS VM can pause at a `debugger;` and resume later.
  */
-EM_JS(void, js_debugger_break, (const char *info), {
+EM_ASYNC_JS(int, js_debugger_break_async, (JSRuntime *rt, const char *info), {
   const msg = UTF8ToString(info);
-  if (Module.onQuickJSDebugBreak) {
-    Module.onQuickJSDebugBreak(msg);
+  let result = { action: "step" };
+  if (Module.onQuickJSDebugBreakAsync) {
+    const r = await Module.onQuickJSDebugBreakAsync(msg);
+    if (r && typeof r.action === "string") {
+      result = r;
+    }
+  } else if (Module.onQuickJSDebugBreak) {
+    await Module.onQuickJSDebugBreak(msg);
   } else {
     console.log("[quickjs-debugger]", msg);
   }
+  if (result && result.action === "continue") {
+    return 1;
+  }
+  return 0;
 });
 
 EM_JS(void, js_error_report, (const char *info), {
@@ -47,6 +61,8 @@ EM_JS(void, js_console_log, (const char *info), {
     console.log("[quickjs-log]", msg);
   }
 });
+
+static JSRuntime *wasm_debug_rt;
 
 /* Minimal helpers exported for the JS host.
  *
@@ -123,15 +139,19 @@ static int wasm_debugger_handler(JSContext *ctx, void *opaque)
 
     stack = JS_ToCString(ctx, val);
     if (stack) {
-        js_debugger_break(stack);
+        int action = js_debugger_break_async(wasm_debug_rt, stack);
         JS_FreeCString(ctx, stack);
+        if (action == 1 && wasm_debug_rt) {
+            /* "Continue": disable further debugger breaks for this runtime. */
+            JS_SetDebuggerHandler(wasm_debug_rt, NULL, NULL);
+        }
     }
     JS_FreeValue(ctx, val);
 
-    /* 0 = continue execution, nonzero would abort */
+    /* 0 = continue execution, non-zero would abort */
     return 0;
 }
-
+ 
 /* Example API: call this once after creating the runtime.
  *
  * From JS you typically call this through ccall/cwrap or embind,
@@ -142,8 +162,10 @@ static int wasm_debugger_handler(JSContext *ctx, void *opaque)
 EMSCRIPTEN_KEEPALIVE
 void qjs_install_debugger_handler(JSRuntime *rt)
 {
+    wasm_debug_rt = rt;
     JS_SetDebuggerHandler(rt, wasm_debugger_handler, NULL);
 }
+
 
 /* Minimal console.log implementation for wasm builds.
  *

@@ -146,12 +146,14 @@ Key files:
 1. The page hosts a CodeMirror 6 editor where you can type JavaScript. The default sample includes a `debugger;` line.
 2. A WebAssembly-compiled QuickJS module is loaded as `window.QuickJSModule`.
 3. When the wasm module is instantiated, it is given callback hooks:
-
+ 
    ```js
    const ModuleFactory = window.QuickJSModule;
    const mod = ModuleFactory({
-     onQuickJSDebugBreak(msg) {
+     async onQuickJSDebugBreakAsync(msg) {
        // Called whenever the engine hits a debugger; statement.
+       // Returns a Promise that resolves when the UI
+       // decides to continue/step.
      },
      onQuickJSError(msg) {
        // Error messages from QuickJS.
@@ -161,19 +163,18 @@ Key files:
      },
    });
    ```
-
-4. In `main.js`, `onQuickJSDebugBreak` updates the UI:
-
+ 
+4. In `main.js`, `onQuickJSDebugBreakAsync` updates the UI and pauses:
+ 
    - It stores the latest stack string.
    - It uses `parseTopFrame(stackText, totalLines)` from `debugger-logic.js` to extract the top frame.
    - It highlights the current paused line in the editor.
+   - It returns a Promise that is resolved when the user presses
+     "Step" or "Continue", which lets the Asyncify-instrumented
+     QuickJS VM resume from the paused `debugger;` bytecode.
+ 
+5. The "Step" and "Continue" buttons now resume the **same** VM instance. They no longer rewrite source or re-run the program from scratch; instead they resolve the pending debug Promise so the wasm stack continues from where it stopped.
 
-5. The "Step" and "Continue" buttons are implemented in the UI by rewriting source:
-
-   - `transformCodeForStep(source, currentLine)` removes `debugger;` from the current line only (a crude single-step).
-   - `transformCodeForContinue(source)` removes all `debugger;` statements.
-
-This is intentionally simple: it demonstrates that the engine can signal `debugger;` pauses to the host and that the host can respond (e.g. by changing source and re-running).
 
 ## Building and running the browser debugger
 
@@ -229,13 +230,14 @@ Then open the printed URL (typically `http://localhost:5173/`) and try code cont
 - Build with `-s MODULARIZE=1 -s EXPORT_NAME=QuickJSModule` so that the loader matches `main.js`.
 
 ## Notes and limitations
-
+ 
 - This is a **minimal** debugger hook, not a full protocol like Chrome DevTools.
-- Stepping / continuing in the browser example is implemented by rewriting `debugger;` statements, not by pausing and resuming the same VM instance at the bytecode level.
+- In the wasm/browser example, pauses happen at `debugger;` bytecodes and resume via Emscripten Asyncify; there is no general-purpose bytecode stepping (step over / into / out) or breakpoint table yet.
 - A production debugger would typically:
   - Keep a persistent runtime and context.
-  - Implement stepping at the VM/bytecode level.
+  - Implement full stepping and breakpoints at the VM/bytecode level.
   - Expose a richer protocol (e.g. over a socket) for IDEs or remote tools.
+
 
 This fork aims to stay close to upstream QuickJS while providing:
 

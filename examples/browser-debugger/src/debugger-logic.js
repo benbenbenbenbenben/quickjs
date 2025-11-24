@@ -28,22 +28,3 @@ export function parseTopFrame(stackText, totalLines) {
   return {locationText: firstLine, lineNumber};
 }
 
-/**
- * For a single-step operation: remove `debugger` statements from the
- * currently-paused line only.
- */
-export function transformCodeForStep(source, currentLine) {
-  if (typeof source !== "string" || !currentLine) return source;
-  const lines = source.split("\n");
-  if (currentLine < 1 || currentLine > lines.length) return source;
-  lines[currentLine - 1] = lines[currentLine - 1].replace(/\bdebugger;?/g, "");
-  return lines.join("\n");
-}
-
-/**
- * For a continue operation: strip all `debugger` statements from the source.
- */
-export function transformCodeForContinue(source) {
-  if (typeof source !== "string") return source;
-  return source.replace(/\bdebugger;?/g, "");
-}

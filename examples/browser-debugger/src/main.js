@@ -1,7 +1,7 @@
 import {EditorState, Compartment, StateEffect, StateField} from "@codemirror/state";
 import {EditorView, Decoration} from "@codemirror/view";
 import {javascript} from "@codemirror/lang-javascript";
-import {parseTopFrame, transformCodeForStep, transformCodeForContinue} from "./debugger-logic.js";
+import {parseTopFrame} from "./debugger-logic.js";
 
 // Simple CodeMirror 6 setup
 const language = new Compartment();
@@ -80,6 +80,8 @@ let ctxPtr = 0;
 let paused = false;
 let lastStack = "";
 let currentDebugLine = null;
+let currentDebugResolve = null;
+let runInProgress = false;
 
 function appendConsole(msg) {
   consoleLog.textContent += msg + "\n";
@@ -98,13 +100,16 @@ function loadQuickJSModule() {
     }
     const ModuleFactory = window.QuickJSModule;
     const mod = ModuleFactory({
-      onQuickJSDebugBreak(msg) {
+      async onQuickJSDebugBreakAsync(msg) {
         paused = true;
         lastStack = msg;
         updateDebuggerFromStack(msg);
         stepBtn.disabled = false;
         contBtn.disabled = false;
         statusEl.textContent = "Paused at debugger;";
+        return new Promise(resolveBreak => {
+          currentDebugResolve = resolveBreak;
+        });
       },
       onQuickJSError(msg) {
         appendConsole(msg);
@@ -236,58 +241,67 @@ async function ensureRuntime() {
 }
 
 
-async function runCurrentCode(transformCode) {
-  const {Module, rtPtr, ctxPtr} = await ensureRuntime();
+async function runCurrentCode() {
+  if (runInProgress) {
+    return;
+  }
+  runInProgress = true;
+  runBtn.disabled = true;
 
+  const {Module, rtPtr, ctxPtr} = await ensureRuntime();
+ 
+  // Always (re)install the debugger handler at the start of a run so
+  // that a previous "Continue" only suppresses breaks for that run.
+  const qjs_install_debugger_handler = Module.cwrap(
+    "qjs_install_debugger_handler",
+    null,
+    ["number"],
+  );
+  qjs_install_debugger_handler(rtPtr);
+ 
   // clear previous state
   paused = false;
   lastStack = "";
   currentDebugLine = null;
+  currentDebugResolve = null;
   stepBtn.disabled = true;
   contBtn.disabled = true;
   locationEl.textContent = "-";
   stackEl.textContent = "";
   localsEl.textContent = "";
   view.dispatch({effects: setDebugLineEffect.of(null)});
+ 
+  const code = view.state.doc.toString();
+ 
+  const JS_EVAL_TYPE_GLOBAL = 0;
+  const JS_EVAL_FLAG_STRICT = 1 << 3;
+ 
+  statusEl.textContent = "Running...";
+  appendConsole("---- run ----");
+ 
+  const evalResult = await Module.ccall(
+    "JS_Eval",
+    "number",
+    ["number", "string", "number", "string", "number"],
+    [ctxPtr, code, code.length, "<input>", JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_STRICT],
+    {async: true},
+  );
 
-  const originalCode = view.state.doc.toString();
-  const code = typeof transformCode === "function" ? transformCode(originalCode) : originalCode;
-
-
-
-  const JS_Eval = Module.cwrap("JS_Eval", "number", [
-    "number", // ctx
-    "string", // input
-    "number", // len
-    "string", // filename
-    "number", // flags
-  ]);
   const qjs_is_exception = Module.cwrap("qjs_is_exception", "number", ["number"]);
   const qjs_free_value = Module.cwrap("qjs_free_value", null, ["number", "number"]);
   const qjs_dump_exception = Module.cwrap("qjs_dump_exception", null, ["number"]);
   const qjs_to_cstring = Module.cwrap("qjs_to_cstring", "number", ["number", "number"]);
   const qjs_free_cstring = Module.cwrap("qjs_free_cstring", null, ["number", "number"]);
- 
-  // JS_EVAL_TYPE_GLOBAL = 0, JS_EVAL_FLAG_STRICT = (1 << 3)
-  const JS_EVAL_TYPE_GLOBAL = 0;
 
-  const JS_EVAL_FLAG_STRICT = 1 << 3;
-
-  statusEl.textContent = "Running...";
-  appendConsole("---- run ----");
-
-  const val = JS_Eval(ctxPtr, code, code.length, "<input>", JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_STRICT);
-  if (qjs_is_exception(val)) {
+  if (qjs_is_exception(evalResult)) {
     qjs_dump_exception(ctxPtr);
     appendConsole("Uncaught exception");
   } else {
     appendConsole("Program finished");
   }
-  qjs_free_value(ctxPtr, val);
+  qjs_free_value(ctxPtr, evalResult);
 
   // Pull buffered console.log output from the QuickJS context.
-  // We keep logs in a simple array of strings and join them on
-  // newlines to avoid depending on JSON helpers inside QuickJS.
   const dumpLogsSrc = `
     (function(){
       var g = (typeof globalThis !== 'undefined') ? globalThis : this;
@@ -301,13 +315,15 @@ async function runCurrentCode(transformCode) {
       return out;
     })();
   `;
-  const logsVal = JS_Eval(
-    ctxPtr,
-    dumpLogsSrc,
-    dumpLogsSrc.length,
-    "<dump-logs>",
-    JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_STRICT
+
+  const logsVal = await Module.ccall(
+    "JS_Eval",
+    "number",
+    ["number", "string", "number", "string", "number"],
+    [ctxPtr, dumpLogsSrc, dumpLogsSrc.length, "<dump-logs>", JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_STRICT],
+    {async: true},
   );
+
   if (!qjs_is_exception(logsVal)) {
     const cstrPtr = qjs_to_cstring(ctxPtr, logsVal);
     if (cstrPtr) {
@@ -328,6 +344,9 @@ async function runCurrentCode(transformCode) {
   if (!paused) {
     statusEl.textContent = "Finished";
   }
+
+  runInProgress = false;
+  runBtn.disabled = false;
 }
 
 runBtn.addEventListener("click", () => {
@@ -338,28 +357,25 @@ runBtn.addEventListener("click", () => {
 });
 
 stepBtn.addEventListener("click", () => {
-  if (!paused) return;
+  if (!paused || !currentDebugResolve) return;
   paused = false;
   stepBtn.disabled = true;
   contBtn.disabled = true;
-  statusEl.textContent = "Stepping to next debugger;";
-  const lineToSkip = currentDebugLine;
-  runCurrentCode(code => transformCodeForStep(code, lineToSkip)).catch(err => {
-    console.error(err);
-    statusEl.textContent = "Error: " + err.message;
-  });
+  statusEl.textContent = "Stepping...";
+  const resolve = currentDebugResolve;
+  currentDebugResolve = null;
+  resolve({ action: "step" });
 });
 
 contBtn.addEventListener("click", () => {
-  if (!paused) return;
+  if (!paused || !currentDebugResolve) return;
   paused = false;
   stepBtn.disabled = true;
   contBtn.disabled = true;
-  statusEl.textContent = "Continuing (ignoring debugger; statements)";
-  runCurrentCode(code => transformCodeForContinue(code)).catch(err => {
-    console.error(err);
-    statusEl.textContent = "Error: " + err.message;
-  });
+  statusEl.textContent = "Continuing";
+  const resolve = currentDebugResolve;
+  currentDebugResolve = null;
+  resolve({ action: "continue" });
 });
 
 inspectRun.addEventListener("click", async () => {
