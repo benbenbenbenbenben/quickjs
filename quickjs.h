@@ -915,6 +915,11 @@ void JS_SetHostPromiseRejectionTracker(JSRuntime *rt, JSHostPromiseRejectionTrac
 /* return != 0 if the JS code needs to be interrupted */
 typedef int JSInterruptHandler(JSRuntime *rt, void *opaque);
 void JS_SetInterruptHandler(JSRuntime *rt, JSInterruptHandler *cb, void *opaque);
+
+/* debugger support: called when a debugger; statement is executed */
+typedef int JSDebuggerHandler(JSContext *ctx, void *opaque);
+void JS_SetDebuggerHandler(JSRuntime *rt, JSDebuggerHandler *cb, void *opaque);
+
 /* if can_block is TRUE, Atomics.wait() can be used */
 void JS_SetCanBlock(JSRuntime *rt, JS_BOOL can_block);
 /* select which debug info is stripped from the compiled code */
@@ -922,6 +927,7 @@ void JS_SetCanBlock(JSRuntime *rt, JS_BOOL can_block);
 #define JS_STRIP_DEBUG  (1 << 1) /* strip all debug info including source code */
 void JS_SetStripInfo(JSRuntime *rt, int flags);
 int JS_GetStripInfo(JSRuntime *rt);
+
 
 /* set the [IsHTMLDDA] internal slot */
 void JS_SetIsHTMLDDA(JSContext *ctx, JSValueConst obj);

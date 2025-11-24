@@ -282,10 +282,14 @@ struct JSRuntime {
 
     JSHostPromiseRejectionTracker *host_promise_rejection_tracker;
     void *host_promise_rejection_tracker_opaque;
+ 
+     struct list_head job_list; /* list of JSJobEntry.link */
+ 
+     JSDebuggerHandler *debugger_handler;
+     void *debugger_opaque;
+ 
+     JSModuleNormalizeFunc *module_normalize_func;
 
-    struct list_head job_list; /* list of JSJobEntry.link */
-
-    JSModuleNormalizeFunc *module_normalize_func;
     BOOL module_loader_has_attr;
     union {
         JSModuleLoaderFunc *module_loader_func;
@@ -1820,8 +1824,15 @@ void JS_SetInterruptHandler(JSRuntime *rt, JSInterruptHandler *cb, void *opaque)
     rt->interrupt_handler = cb;
     rt->interrupt_opaque = opaque;
 }
+ 
+void JS_SetDebuggerHandler(JSRuntime *rt, JSDebuggerHandler *cb, void *opaque)
+{
+    rt->debugger_handler = cb;
+    rt->debugger_opaque = opaque;
+}
+ 
+ void JS_SetCanBlock(JSRuntime *rt, BOOL can_block)
 
-void JS_SetCanBlock(JSRuntime *rt, BOOL can_block)
 {
     rt->can_block = can_block;
 }
@@ -6808,8 +6819,11 @@ void JS_ComputeMemoryUsage(JSRuntime *rt, JSMemoryUsage *s)
 
 void JS_DumpMemoryUsage(FILE *fp, const JSMemoryUsage *s, JSRuntime *rt)
 {
-    fprintf(fp, "QuickJS memory usage -- " CONFIG_VERSION " version, %d-bit, malloc limit: %"PRId64"\n\n",
-            (int)sizeof(void *) * 8, s->malloc_limit);
+    fprintf(fp,
+            "QuickJS memory usage -- %s version, %d-bit, malloc limit: %lld\n\n",
+            CONFIG_VERSION,
+            (int)sizeof(void *) * 8,
+            (long long)s->malloc_limit);
 #if 1
     if (rt) {
         static const struct {
@@ -20001,6 +20015,17 @@ static JSValue JS_CallInternal(JSContext *caller_ctx, JSValueConst func_obj,
             ret_val = JS_NewInt32(ctx, FUNC_RET_INITIAL_YIELD);
             goto done_generator;
 
+        CASE(OP_debugger):
+            if (rt->debugger_handler) {
+                int dbg_ret;
+                sf->cur_pc = pc - 1;
+                dbg_ret = rt->debugger_handler(ctx, rt->debugger_opaque);
+                if (dbg_ret != 0) {
+                    JS_ThrowInternalError(ctx, "debugger aborted execution");
+                    goto exception;
+                }
+            }
+            BREAK;
         CASE(OP_nop):
             BREAK;
         CASE(OP_is_undefined_or_null):
@@ -29003,7 +29028,8 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
         break;
 
     case TOK_DEBUGGER:
-        /* currently no debugger, so just skip the keyword */
+        emit_source_pos(s, s->token.ptr);
+        emit_op(s, OP_debugger);
         if (next_token(s))
             goto fail;
         if (js_parse_expect_semi(s))

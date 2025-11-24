@@ -46,6 +46,147 @@
 extern const uint8_t qjsc_repl[];
 extern const uint32_t qjsc_repl_size;
 
+static int qjs_debugger_handler(JSContext *ctx, void *opaque)
+{
+    JSAtom name_atom;
+    const char *name_str;
+    char line[256];
+
+    (void)opaque;
+
+    name_atom = JS_GetScriptOrModuleName(ctx, 0);
+    name_str = JS_AtomToCString(ctx, name_atom);
+    if (name_str) {
+        fprintf(stderr, "Debugger breakpoint in %s\n", name_str);
+        JS_FreeCString(ctx, name_str);
+    } else {
+        fprintf(stderr, "Debugger breakpoint\n");
+    }
+    JS_FreeAtom(ctx, name_atom);
+
+    /* show current line/column using first frame of Error.stack */
+    {
+        const char *src = "new Error().stack";
+        JSValue val = JS_Eval(ctx, src, strlen(src), "<debugger>", JS_EVAL_TYPE_GLOBAL);
+        if (JS_IsException(val)) {
+            js_std_dump_error(ctx);
+        } else {
+            const char *stack = JS_ToCString(ctx, val);
+            if (stack) {
+                const char *p = strchr(stack, '\n');
+                if (p) {
+                    const char *frame = p + 1;
+                    const char *end = strchr(frame, '\n');
+                    int len = end ? (int)(end - frame) : (int)strlen(frame);
+                    if (len > 0) {
+                        fprintf(stderr, "%.*s\n", len, frame);
+                    } else {
+                        fprintf(stderr, "%s\n", stack);
+                    }
+                } else {
+                    fprintf(stderr, "%s\n", stack);
+                }
+                JS_FreeCString(ctx, stack);
+            }
+        }
+        JS_FreeValue(ctx, val);
+    }
+
+    for (;;) {
+        size_t len;
+
+        fputs("debug> ", stderr);
+        if (!fgets(line, sizeof(line), stdin))
+            return 1;
+
+        /* continue / quit commands */
+        if (line[0] == 'c' || line[0] == 'C')
+            return 0; /* continue */
+        if (line[0] == 'q' || line[0] == 'Q')
+            return 1; /* abort */
+
+        /* bt: print full JS backtrace using Error.stack */
+        if (line[0] == 'b' && line[1] == 't') {
+            const char *src = "new Error().stack";
+            JSValue val = JS_Eval(ctx, src, strlen(src), "<debugger>", JS_EVAL_TYPE_GLOBAL);
+            if (JS_IsException(val)) {
+                js_std_dump_error(ctx);
+            } else {
+                const char *stack = JS_ToCString(ctx, val);
+                if (stack) {
+                    fprintf(stderr, "%s\n", stack);
+                    JS_FreeCString(ctx, stack);
+                }
+            }
+            JS_FreeValue(ctx, val);
+            continue;
+        }
+
+        /* trim trailing newline/CR */
+        len = strlen(line);
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+            line[--len] = '\0';
+        if (len == 0)
+            continue;
+
+        /* this: print current 'this' (according to eval environment) */
+        if (!strcmp(line, "this")) {
+            const char *src = "this";
+            JSValue val = JS_Eval(ctx, src, strlen(src), "<debugger>", JS_EVAL_TYPE_GLOBAL);
+            if (JS_IsException(val)) {
+                js_std_dump_error(ctx);
+            } else {
+                const char *str = JS_ToCString(ctx, val);
+                if (str) {
+                    fprintf(stderr, "%s\n", str);
+                    JS_FreeCString(ctx, str);
+                }
+            }
+            JS_FreeValue(ctx, val);
+            continue;
+        }
+
+        /* locals: show own enumerable properties of 'this' */
+        if (!strcmp(line, "locals")) {
+            const char *src =
+                "(function(){\n"
+                "  const o = this;\n"
+                "  if (o == null) return '<no this>';\n"
+                "  const names = Object.keys(o);\n"
+                "  if (!names.length) return '<no own properties>';\n"
+                "  return names.map(n => n + '=' + String(o[n])).join('\\n');\n"
+                "}).call(this)";
+            JSValue val = JS_Eval(ctx, src, strlen(src), "<debugger>", JS_EVAL_TYPE_GLOBAL);
+            if (JS_IsException(val)) {
+                js_std_dump_error(ctx);
+            } else {
+                const char *str = JS_ToCString(ctx, val);
+                if (str) {
+                    fprintf(stderr, "%s\n", str);
+                    JS_FreeCString(ctx, str);
+                }
+            }
+            JS_FreeValue(ctx, val);
+            continue;
+        }
+
+        /* otherwise: evaluate arbitrary JS expression */
+        {
+            JSValue val = JS_Eval(ctx, line, len, "<debugger>", JS_EVAL_TYPE_GLOBAL);
+            if (JS_IsException(val)) {
+                js_std_dump_error(ctx);
+            } else {
+                const char *str = JS_ToCString(ctx, val);
+                if (str) {
+                    fprintf(stderr, "%s\n", str);
+                    JS_FreeCString(ctx, str);
+                }
+            }
+            JS_FreeValue(ctx, val);
+        }
+    }
+}
+
 static int eval_buf(JSContext *ctx, const void *buf, int buf_len,
                     const char *filename, int eval_flags)
 {
@@ -305,9 +446,11 @@ void help(void)
            "    --memory-limit n  limit the memory usage to 'n' bytes (SI suffixes allowed)\n"
            "    --stack-size n    limit the stack size to 'n' bytes (SI suffixes allowed)\n"
            "    --no-unhandled-rejection  ignore unhandled promise rejections\n"
-           "-s                    strip all the debug info\n"
-           "    --strip-source    strip the source code\n"
-           "-q  --quit         just instantiate the interpreter and quit\n");
+            "-s                    strip all the debug info\n"
+            "    --strip-source    strip the source code\n"
+            "    --debug        break on 'debugger' statements\n"
+            "-q  --quit         just instantiate the interpreter and quit\n");
+
     exit(1);
 }
 
@@ -326,6 +469,7 @@ int main(int argc, char **argv)
     int strict = 0;
     int load_std = 0;
     int dump_unhandled_promise_rejection = 1;
+    int debug = 0;
     size_t memory_limit = 0;
     char *include_list[32];
     int i, include_count = 0;
@@ -409,6 +553,10 @@ int main(int argc, char **argv)
                 load_std = 1;
                 continue;
             }
+            if (!strcmp(longopt, "debug")) {
+                debug = 1;
+                continue;
+            }
             if (!strcmp(longopt, "no-unhandled-rejection")) {
                 dump_unhandled_promise_rejection = 0;
                 continue;
@@ -465,6 +613,8 @@ int main(int argc, char **argv)
     if (stack_size != 0)
         JS_SetMaxStackSize(rt, stack_size);
     JS_SetStripInfo(rt, strip_flags);
+    if (debug)
+        JS_SetDebuggerHandler(rt, qjs_debugger_handler, NULL);
     js_std_set_worker_new_context_func(JS_NewCustomContext);
     js_std_init_handlers(rt);
     ctx = JS_NewCustomContext(rt);

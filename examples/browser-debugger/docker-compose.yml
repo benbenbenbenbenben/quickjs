@@ -1,0 +1,22 @@
+version: "3.8"
+
+services:
+  quickjs-browser-debugger:
+    build:
+      context: ../..
+      dockerfile: examples/browser-debugger/Dockerfile
+    ports:
+      - "8080:80"
+
+  quickjs-browser-debugger-tests:
+    image: mcr.microsoft.com/playwright:v1.56.1-jammy
+    depends_on:
+      - quickjs-browser-debugger
+    working_dir: /workspace/examples/browser-debugger
+    volumes:
+      - ../..:/workspace
+    environment:
+      # Point Playwright at the nginx-served app in the sibling service.
+      - PLAYWRIGHT_BASE_URL=http://quickjs-browser-debugger:80
+    command: ["npm", "run", "test:e2e"]
+
