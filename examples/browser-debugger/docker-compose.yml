@@ -18,5 +18,9 @@ services:
     environment:
       # Point Playwright at the nginx-served app in the sibling service.
       - PLAYWRIGHT_BASE_URL=http://quickjs-browser-debugger:80
-    command: ["npm", "run", "test:e2e"]
+    # Run Playwright as root inside the container, but ensure that the
+    # shared test-results directory is world-writable so that files
+    # created by this container do not cause EACCES errors when tests
+    # are later run on the host.
+    command: ["bash", "-lc", "mkdir -p test-results && chmod -R 777 test-results && npm run test:e2e"]
 

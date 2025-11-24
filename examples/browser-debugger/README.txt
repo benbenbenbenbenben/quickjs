@@ -51,7 +51,7 @@ A sketch (adjust paths / flags as needed):
      -s ENVIRONMENT=web \
      -s MODULARIZE=1 -s EXPORT_NAME=QuickJSModule \
       -s ASYNCIFY=1 \
-      -s ASYNCIFY_STACK_SIZE=32768 \
+      -s ASYNCIFY_STACK_SIZE=131072 \
       -s ASYNCIFY_IMPORTS='["js_debugger_break_async"]' \
 
       -s EXPORTED_FUNCTIONS='["_JS_NewRuntime","_JS_NewContext","_JS_Eval","_JS_IsException","_JS_ToCString","_JS_FreeCString","_JS_FreeValue","_js_std_dump_error","_qjs_install_debugger_handler"]' \

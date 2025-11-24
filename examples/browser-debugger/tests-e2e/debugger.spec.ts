@@ -121,6 +121,33 @@ test('continue runs to end and subsequent run pauses again', async ({ page }) =>
   await runButton.click();
 });
 
+// Verify that repeated stepping while paused does not crash the
+// Asyncify stack and that the UI remains responsive.
+test('repeated step operations do not abort Asyncify stack', async ({ page }) => {
+  await runUntilPaused(page);
+
+  const stepButton = page.getByRole('button', { name: 'Step' });
+  await expect(stepButton).toBeEnabled();
+
+  // Click Step multiple times in a loop to exercise Asyncify
+  // rewind/unwind paths and ensure no "unreachable" aborts are
+  // surfaced into the UI. We do not assert the exact final state,
+  // only that the console/status never mention an Asyncify abort.
+  for (let i = 0; i < 10; i++) {
+    await stepButton.click();
+    // Allow the UI and engine to settle after each step.
+    await page.waitForTimeout(50);
+  }
+
+  const statusText = await page.locator('#status').innerText();
+  const consoleText = await page.locator('#console-log').innerText();
+
+  expect(statusText).not.toMatch(/unreachable/);
+  expect(statusText).not.toMatch(/ASYNCIFY_STACK_SIZE/i);
+  expect(consoleText).not.toMatch(/unreachable/);
+  expect(consoleText).not.toMatch(/ASYNCIFY_STACK_SIZE/i);
+});
+
 // Verify Step and Continue buttons are disabled when not paused
 // and become enabled once a breakpoint is hit.
 test('step and continue buttons enable/disable with debugger state', async ({ page }) => {
