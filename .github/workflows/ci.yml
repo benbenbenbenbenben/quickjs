@@ -303,3 +303,14 @@ jobs:
         run: docker run --privileged --rm tonistiigi/binfmt:master --install all
       - name: Run tests on ${{ matrix.platform }}
         run: docker run --rm --interactive --mount type=bind,source=$(pwd),target=/host --platform ${{ matrix.platform }} alpine sh -c "apk add git patch make gcc libc-dev && cd /host && make test"
+
+  browser-debugger-wasm:
+    name: Browser debugger wasm build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Build wasm and browser debugger (Emscripten)
+        run: |
+          ./examples/browser-debugger/build-in-container.sh
