@@ -1,0 +1,5 @@
+node_modules/
+.vite/
+.DS_Store
+npm-debug.log*
+/test-results/
