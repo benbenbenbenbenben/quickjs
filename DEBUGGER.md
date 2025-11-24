@@ -22,22 +22,97 @@ At a high level:
 - `quickjs.c` adds/extends:
   - Handling of `TOK_DEBUGGER` in the bytecode interpreter.
   - A runtime field that stores debugger-related configuration (e.g. hooks and strip flags).
-- `quickjs.h` exposes a small C API for embedders who want to install a handler; for example (names may change slightly):
+- `quickjs.h` exposes a small C API for embedders who want to install a handler:
 
   ```c
-  typedef void JSDebuggerHandler(JSRuntime *rt, const char *msg, void *opaque);
+  typedef int JSDebuggerHandler(JSContext *ctx, void *opaque);
 
   void JS_SetDebuggerHandler(JSRuntime *rt,
-                             JSDebuggerHandler *handler,
+                             JSDebuggerHandler *cb,
                              void *opaque);
   ```
 
-  `msg` is a human-readable description of where the breakpoint occurred (e.g. filename, line and column, and a small stack summary). The browser example treats it as an `Error().stack` string.
+  The handler is called whenever a `debugger;` statement executes. It receives the current `JSContext *` and your `opaque` pointer, and should return `0` to continue execution or a non-zero value to abort the current run with an internal error.
 
 - The existing strip flags are respected when requested:
   - `JS_STRIP_DEBUG` can be used via `qjs`/`qjsc` to strip debugger metadata from compiled output if you don’t want debugger support.
 
 See the usage example in `examples/wasm-debug/wasm_debug.c`.
+
+## Native C API reference
+
+This section summarizes the native debugger API for embedders, using the public declarations in `quickjs.h` and the reference implementation in `qjs.c`.
+
+### API surface
+
+```c
+typedef int JSDebuggerHandler(JSContext *ctx, void *opaque);
+
+void JS_SetDebuggerHandler(JSRuntime *rt,
+                           JSDebuggerHandler *cb,
+                           void *opaque);
+```
+
+- The handler is installed per-runtime via `JS_SetDebuggerHandler`.
+- It is invoked synchronously from the bytecode interpreter whenever a `debugger;` statement executes.
+- If the handler returns `0`, execution continues after the `debugger;`.
+- If the handler returns non-zero, QuickJS throws an internal error and unwinds the current execution.
+
+### Minimal usage example
+
+```c
+static int logging_debugger_handler(JSContext *ctx, void *opaque)
+{
+    (void)opaque;
+
+    JSAtom name_atom = JS_GetScriptOrModuleName(ctx, 0);
+    const char *name_str = JS_AtomToCString(ctx, name_atom);
+    if (name_str) {
+        fprintf(stderr, "[debugger] Breakpoint in %s\n", name_str);
+        JS_FreeCString(ctx, name_str);
+    } else {
+        fprintf(stderr, "[debugger] Breakpoint\n");
+    }
+    JS_FreeAtom(ctx, name_atom);
+
+    const char *src = "new Error().stack";
+    JSValue val = JS_Eval(ctx, src, strlen(src), "<debugger>", JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(val)) {
+        js_std_dump_error(ctx);
+    } else {
+        const char *stack = JS_ToCString(ctx, val);
+        if (stack) {
+            fprintf(stderr, "%s\n", stack);
+            JS_FreeCString(ctx, stack);
+        }
+    }
+    JS_FreeValue(ctx, val);
+
+    return 0; /* always continue */
+}
+
+...
+
+JSRuntime *rt = JS_NewRuntime();
+JSContext *ctx = JS_NewContext(rt);
+
+JS_SetDebuggerHandler(rt, logging_debugger_handler, NULL);
+```
+
+### Interactive CLI-style handler
+
+The standalone interpreter in this fork (`qjs`) registers a more powerful handler, `qjs_debugger_handler` (`qjs.c:49`), which you can copy or adapt. It:
+
+- Prints the script/module name and the top frame of `Error().stack` when a breakpoint hits.
+- Enters a small read–eval–print loop on `stdin`:
+  - `c` / `C` → continue execution
+  - `q` / `Q` → abort the current script
+  - `bt` → print a full JavaScript backtrace (`new Error().stack`)
+  - `this` → print the current `this` value
+  - `locals` → print own enumerable properties of `this`
+  - any other input → evaluated as a JavaScript expression in the current context, with the result printed.
+
+This is a convenient reference if you want to build a CLI tool with interactive debugging on top of the engine.
 
 ## Wasm embedding helper (`wasm_debug.c`)
 

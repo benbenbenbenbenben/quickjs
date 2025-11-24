@@ -131,6 +131,12 @@ When you push to `debugger` or open a PR, CI should automatically run and serve 
 
 4. Push your branch and open a pull request against `debugger` on GitHub.
 
+## Debugging
+
+This fork includes additional debugger support and examples. For an overview of the engine hook, the native C API, and the browser/wasm demo, see:
+
+- `DEBUGGER.md`
+
 ## Notes on debugger code
 
 - Debugger support lives in modifications to the core VM (`quickjs.c`, `quickjs.h`, `quickjs-opcode.h`, etc.) and in tests/examples such as:
